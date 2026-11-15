@@ -24,7 +24,7 @@ extension UpdaterService {
         let runner = prewarmRunner, log = log, work = work
         // task-owner: one pre-warm per staged build; ends after its last process (each stopped at its timeout).
         // Best effort: nobody waits for it; its folder scan runs on a files lane slot of its own
-        // (``StagedUpdatePrewarm/perform(work:processes:timeout:progress:)``), its processes through AsyncProcess.
+        // (``StagedUpdatePrewarm/perform(work:processes:timeout:total:clock:progress:)``), its processes through AsyncProcess.
         Task.detached(priority: WorkPriority.bestEffort.taskPriority) {
             if let runner {
                 log.append(await runner(prewarm))
