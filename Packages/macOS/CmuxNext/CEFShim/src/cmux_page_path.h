@@ -228,9 +228,9 @@ inline PageRequestVerdict JudgePageRequest(bool main_frame, const std::string& f
             url[origin.size()] == '#');
   };
   if (same(frame_url)) return PageRequestVerdict::kAllow;
-  (void)frame_settled;
-  return (frame_url.empty() || frame_url == "about:blank") && same(parent_url) ? PageRequestVerdict::kAllow
-                                                                               : PageRequestVerdict::kRefuse;
+  if (!frame_url.empty() && frame_url != "about:blank") return PageRequestVerdict::kRefuse;
+  if (!parent_url.empty()) return same(parent_url) ? PageRequestVerdict::kAllow : PageRequestVerdict::kRefuse;
+  return frame_settled ? PageRequestVerdict::kRefuse : PageRequestVerdict::kWaitForFrame;
 }
 
 // JudgePageRequest once the frame is settled: allowed or not.

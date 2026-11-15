@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cstring>
+#include <functional>
 #include <mutex>
 
 #include "cmux_page_path.h"
@@ -253,6 +254,114 @@ void DynamicResource::Cancel() {
 // dev server or an overlay folder instead of the folder fixed at registration. Read per request.
 std::atomic<bool> g_live_pages{false};
 
+// A request from a top frame the browser side still reads as blank (JudgePageRequest's
+// kWaitForFrame): on a busy launch a page's scripts and styles are asked for before CEF has
+// the frame's committed URL. It polls the frame on the IO thread until its URL is known, the
+// frame goes away or kDeferredPageWaitMs pass, then `decide` makes the real handler (the file,
+// or 403) from the URL it then has, and every call goes to that handler. No access is added:
+// the frame is judged by the same rule, only later.
+class DeferredPageResource : public CefResourceHandler {
+ public:
+  using Decide = std::function<CefRefPtr<CefResourceHandler>(const std::string& frame_url)>;
+  static constexpr int kDeferredPageWaitMs = 5000;
+  static constexpr int kDeferredPagePollMs = 10;
+
+  DeferredPageResource(CefRefPtr<CefFrame> frame, Decide decide) : frame_(frame), decide_(std::move(decide)) {}
+
+  bool Open(CefRefPtr<CefRequest> request, bool& handle_request, CefRefPtr<CefCallback> callback) override {
+    handle_request = false;
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      request_ = request;
+      callback_ = callback;
+    }
+    Poll();
+    return true;
+  }
+  void GetResponseHeaders(CefRefPtr<CefResponse> response, int64_t& response_length, CefString& redirect) override {
+    if (CefRefPtr<CefResourceHandler> inner = Inner()) return inner->GetResponseHeaders(response, response_length, redirect);
+    response->SetStatus(403);
+    response->SetStatusText(PageStatusText(403));
+    response->SetMimeType("text/plain");
+    response_length = 0;
+  }
+  bool Read(void* data_out, int bytes_to_read, int& bytes_read, CefRefPtr<CefResourceReadCallback> callback) override {
+    if (CefRefPtr<CefResourceHandler> inner = Inner()) return inner->Read(data_out, bytes_to_read, bytes_read, callback);
+    bytes_read = 0;
+    return false;
+  }
+  bool Skip(int64_t bytes_to_skip, int64_t& bytes_skipped, CefRefPtr<CefResourceSkipCallback> callback) override {
+    if (CefRefPtr<CefResourceHandler> inner = Inner()) return inner->Skip(bytes_to_skip, bytes_skipped, callback);
+    bytes_skipped = -2;  // net::ERR_FAILED
+    return false;
+  }
+  void Cancel() override {
+    CefRefPtr<CefResourceHandler> inner;
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      cancelled_ = true;
+      callback_ = nullptr;
+      inner = inner_;
+    }
+    if (inner) inner->Cancel();
+  }
+
+  // IO thread: judge once the frame's URL is known, else look again shortly.
+  void Poll() {
+    std::string frame_url = frame_->IsValid() ? frame_->GetURL().ToString() : std::string();
+    const bool settled = !frame_->IsValid() || (!frame_url.empty() && frame_url != "about:blank") ||
+                         waited_ms_ >= kDeferredPageWaitMs;
+    if (!settled) {
+      waited_ms_ += kDeferredPagePollMs;
+      CefPostDelayedTask(TID_IO, new PollTask(this), kDeferredPagePollMs);
+      return;
+    }
+    CefRefPtr<CefResourceHandler> inner = decide_(frame_url);
+    CefRefPtr<CefRequest> request;
+    CefRefPtr<CefCallback> callback;
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      if (cancelled_) return;
+      inner_ = inner;
+      request = request_;
+      callback = callback_;
+    }
+    bool handle_request = false;
+    // The inner handler answers now (a file, a 403) or calls `callback` itself later (the page host).
+    if (!inner->Open(request, handle_request, callback)) {
+      callback->Cancel();
+      return;
+    }
+    if (handle_request) callback->Continue();
+  }
+
+ private:
+  class PollTask : public CefTask {
+   public:
+    explicit PollTask(CefRefPtr<DeferredPageResource> owner) : owner_(owner) {}
+    void Execute() override { owner_->Poll(); }
+
+   private:
+    CefRefPtr<DeferredPageResource> owner_;
+    IMPLEMENT_REFCOUNTING(PollTask);
+  };
+
+  CefRefPtr<CefResourceHandler> Inner() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return inner_;
+  }
+
+  const CefRefPtr<CefFrame> frame_;
+  const Decide decide_;
+  int waited_ms_ = 0;  // IO thread only
+  std::mutex mutex_;
+  CefRefPtr<CefRequest> request_;
+  CefRefPtr<CefCallback> callback_;
+  CefRefPtr<CefResourceHandler> inner_;
+  bool cancelled_ = false;
+  IMPLEMENT_REFCOUNTING(DeferredPageResource);
+};
+
 // Immutable after construction: Create runs off the UI thread.
 class PageFactory : public CefSchemeHandlerFactory {
  public:
@@ -285,10 +394,32 @@ class PageFactory : public CefSchemeHandlerFactory {
       headers.emplace("Referrer-Policy", "no-referrer");
       return Respond(200, "OK", "text/html", headers, kArtifactDocument, sizeof(kArtifactDocument) - 1);
     }
-    if (!PageRequestAllowed(main_frame, frame_url, parent_url, domain_)) {
-      static char kBody[] = "Forbidden";
-      return Respond(403, "Forbidden", "text/plain", Headers(), kBody, sizeof(kBody) - 1);
+    // A request with no frame has nothing to wait for: it is judged now.
+    switch (JudgePageRequest(main_frame, frame_url, parent_url, domain_, !frame)) {
+      case PageRequestVerdict::kAllow:
+        return Serve(browser, request);
+      case PageRequestVerdict::kRefuse:
+        return Forbidden();
+      case PageRequestVerdict::kWaitForFrame: {
+        CefRefPtr<PageFactory> self(this);
+        return new DeferredPageResource(frame, [self, browser, request, parent_url](const std::string& settled_url) {
+          if (JudgePageRequest(false, settled_url, parent_url, self->domain_, true) != PageRequestVerdict::kAllow)
+            return self->Forbidden();
+          return self->Serve(browser, request);
+        });
+      }
     }
+    return Forbidden();
+  }
+
+ private:
+  CefRefPtr<CefResourceHandler> Forbidden() const {
+    static char kBody[] = "Forbidden";
+    return Respond(403, "Forbidden", "text/plain", Headers(), kBody, sizeof(kBody) - 1);
+  }
+
+  // An admitted request: the page's file, a dynamic path, or the live page host.
+  CefRefPtr<CefResourceHandler> Serve(CefRefPtr<CefBrowser> browser, CefRefPtr<CefRequest> request) const {
     if (request->GetMethod().ToString() != "GET") {
       static char kBody[] = "Method Not Allowed";
       CefResponse::HeaderMap headers = Headers();
@@ -324,7 +455,6 @@ class PageFactory : public CefSchemeHandlerFactory {
     return Respond(404, "Not Found", "text/plain", Headers(), kBody, sizeof(kBody) - 1);
   }
 
- private:
   CefResponse::HeaderMap Headers() const {
     CefResponse::HeaderMap headers;
     for (auto& [name, value] : PageResponseHeaders(csp_)) headers.emplace(name, value);
