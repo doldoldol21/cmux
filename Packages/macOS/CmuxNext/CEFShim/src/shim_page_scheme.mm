@@ -256,7 +256,8 @@ std::atomic<bool> g_live_pages{false};
 
 // A request from a top frame the browser side still reads as blank (JudgePageRequest's
 // kWaitForFrame): on a busy launch a page's scripts and styles are asked for before CEF has
-// the frame's committed URL. It polls the frame on the IO thread until its URL is known, the
+// the frame's committed URL. It polls the frame on TID_FILE_USER_BLOCKING (a file handler's Open
+// blocks, so it must not run on the IO or UI thread) until its URL is known, the
 // frame goes away or kDeferredPageWaitMs pass, then `decide` makes the real handler (the file,
 // or 403) from the URL it then has, and every call goes to that handler. No access is added:
 // the frame is judged by the same rule, only later.
@@ -306,14 +307,14 @@ class DeferredPageResource : public CefResourceHandler {
     if (inner) inner->Cancel();
   }
 
-  // IO thread: judge once the frame's URL is known, else look again shortly.
+  // Judge once the frame's URL is known, else look again shortly (TID_FILE_USER_BLOCKING).
   void Poll() {
     std::string frame_url = frame_->IsValid() ? frame_->GetURL().ToString() : std::string();
     const bool settled = !frame_->IsValid() || (!frame_url.empty() && frame_url != "about:blank") ||
                          waited_ms_ >= kDeferredPageWaitMs;
     if (!settled) {
       waited_ms_ += kDeferredPagePollMs;
-      CefPostDelayedTask(TID_IO, new PollTask(this), kDeferredPagePollMs);
+      CefPostDelayedTask(TID_FILE_USER_BLOCKING, new PollTask(this), kDeferredPagePollMs);
       return;
     }
     CefRefPtr<CefResourceHandler> inner = decide_(frame_url);
@@ -353,7 +354,7 @@ class DeferredPageResource : public CefResourceHandler {
 
   const CefRefPtr<CefFrame> frame_;
   const Decide decide_;
-  int waited_ms_ = 0;  // IO thread only
+  int waited_ms_ = 0;  // Poll only; its calls never overlap
   std::mutex mutex_;
   CefRefPtr<CefRequest> request_;
   CefRefPtr<CefCallback> callback_;
