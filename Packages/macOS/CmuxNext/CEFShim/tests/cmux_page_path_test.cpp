@@ -68,9 +68,9 @@ static void Reserved(const std::string& id, bool want) {
 // Review P2: only cmux-page frames of the same host load a page's files;
 // a main-frame navigation is the one exception.
 static void Allowed(bool main_frame, const std::string& frame_url, const std::string& parent_url,
-                    const std::string& domain, bool want) {
-  Expect(cmux_shim::PageRequestAllowed(main_frame, frame_url, parent_url, domain) == want,
-         "request from '" + frame_url + "' parent '" + parent_url + "' for " + domain);
+                    const std::string& domain, bool want, const std::string& referrer = "") {
+  Expect(cmux_shim::PageRequestAllowed(main_frame, frame_url, parent_url, domain, referrer) == want,
+         "request from '" + frame_url + "' parent '" + parent_url + "' referrer '" + referrer + "' for " + domain);
 }
 
 int main() {
@@ -88,6 +88,21 @@ int main() {
   Allowed(false, "cmux-page://cmux.agent/__artifact", "cmux-page://cmux.agent/", "cmux.agent", false);
   Allowed(false, "about:blank", "cmux-page://cmux.agent/__artifact", "cmux.agent", false);
   Allowed(false, "about:srcdoc", "cmux-page://cmux.agent/", "cmux.agent", false);
+  // A page's own scripts and styles asked for before the browser side saw its main frame commit (a
+  // busy first launch: the frame still reads about:blank, no parent). The request's referrer is the
+  // page's document, so it is the page's own; before, every file of the page was refused and the
+  // page stayed blank (Markdown tab beside Home on a new profile, 59 of 60 launches).
+  Allowed(false, "about:blank", "", "cmux.markdown", true, "cmux-page://cmux.markdown/");
+  Allowed(false, "", "", "cmux.markdown", true, "cmux-page://cmux.markdown/chunks/markdown-page.mjs");
+  // Only the same page's referrer: another origin, another cmux page, or none stays refused.
+  Allowed(false, "about:blank", "", "cmux.markdown", false, "");
+  Allowed(false, "about:blank", "", "cmux.markdown", false, "https://evil.test/");
+  Allowed(false, "about:blank", "", "cmux.markdown", false, "cmux-page://cmux.agent/");
+  Allowed(false, "about:blank", "", "cmux.markdown", false, "cmux-page://cmux.markdownx/");
+  // A frame that already shows another document is judged by it, whatever the referrer says.
+  Allowed(false, "https://evil.test/", "", "cmux.markdown", false, "cmux-page://cmux.markdown/");
+  // Artifacts stay closed: an artifact frame's referrer never opens its parent page's files.
+  Allowed(false, "about:blank", "cmux-page://cmux.agent/__artifact", "cmux.agent", false, "cmux-page://cmux.agent/");
   {
     const std::string page = "cmux-page://cmux.agent/";
     const std::string artifact = cmux_shim::kArtifactFrameURL;

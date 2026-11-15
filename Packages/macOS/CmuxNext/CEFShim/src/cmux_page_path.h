@@ -203,7 +203,8 @@ inline bool GrantsCmuxPageLocalNetwork(const std::string& requesting_origin, uin
 // navigated is judged by its parent). Normal web pages can neither embed
 // nor load cmux-page resources.
 inline bool PageRequestAllowed(bool main_frame, const std::string& frame_url, const std::string& parent_url,
-                               const std::string& domain) {
+                               const std::string& domain, const std::string& referrer = "") {
+  (void)referrer;
   if (main_frame) return true;
   if (ArtifactContextRestricted(frame_url, parent_url)) return false;
   const std::string origin = std::string(kCmuxPageScheme) + "://" + domain;
