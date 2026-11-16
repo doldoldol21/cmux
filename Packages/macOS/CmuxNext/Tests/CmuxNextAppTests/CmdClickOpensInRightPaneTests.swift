@@ -67,7 +67,34 @@ struct CmdClickOpensInRightPaneTests {
         }
     }
 
-    enum Right { case browser, terminal }
+    /// The second report (CleanShot 4.58.16 PM): `cmux browser open` run in a terminal with a pane on its right
+    /// put the page in the terminal's own pane. The CLI aims `openBrowser` at its caller's terminal tab; the
+    /// page goes into the pane on the right as a Cmd-click's does. A plain split is one column to `identify`,
+    /// so the CLI cannot place it itself.
+    @Test(arguments: [Right.browser, .terminal])
+    func aCLIBrowserFromATerminalOpensInThePaneOnItsRight(_ kind: Right) async throws {
+        try await Self.withLayout(right: kind) { services, content, source, right in
+            let panes = Set(content.panes.keys)
+            let terminal = try #require(source.pane.tabs.first { $0.terminalID != nil || $0.terminalResourceID != nil })
+            let before = Set(services.daemon.store.workspaces.flatMap(\.screens).flatMap(\.panes).flatMap(\.tabs).map(\.id))
+            var invocation = ActionInvocation(target: ActionTargetRef(kind: .tab, id: terminal.id),
+                                              arguments: ["url": .string("http://127.0.0.1:9/from-the-cli")], origin: .cli)
+            invocation.callerTerminal = terminal.terminalResourceID?.rawValue ?? terminal.terminalID?.rawValue
+            #expect(services.registry.perform("openBrowser", invocation: invocation))
+            @MainActor func made() -> String? {
+                services.daemon.store.workspaces.flatMap(\.screens).flatMap(\.panes).flatMap(\.tabs)
+                    .first { !before.contains($0.id) && !ProvisionalTab.isProvisional($0.id) }?.id
+            }
+            try await PinnedPageTests.until({ made() != nil }, report: { "the CLI's browser made no tab" })
+            let tab = try #require(made())
+            try await PinnedPageTests.until({ right.pane.tabs.contains { $0.id == tab } },
+                                            report: { "the CLI's browser is not a tab in the pane on the right: " + Self.describe(content) })
+            #expect(Set(content.panes.keys) == panes, "the CLI's browser made a new split: \(Self.describe(content))")
+            #expect(!source.pane.tabs.contains { $0.id == tab }, "the CLI's browser stayed in the terminal's pane: \(Self.describe(content))")
+        }
+    }
+
+    enum Right: Sendable { case browser, terminal }
 
     /// A wide window, the first pane (a terminal) split right; the right pane holds one browser tab or its terminal.
     private static func withLayout(right kind: Right,
