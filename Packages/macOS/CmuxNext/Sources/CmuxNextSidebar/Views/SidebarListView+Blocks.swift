@@ -274,6 +274,27 @@ extension SidebarListViewComponents {
         return y >= row.y + base ? row.y + base - 1 : y
     }
 
+    /// The gap the drag shows open, as the row rule reads it (`SidebarDragGeometry.edgeY`, `baseY`): its top in the list
+    /// and how far it moved what is under it. The list's own gap, or a block's gap among item rows (pinned workspaces),
+    /// so pinned and unpinned rows reorder by one rule. Nil for a block's gap among tiles: they flow on lines, and
+    /// the card's centre decides there (`baseY(displayY:blockGap:bases:)`).
+    func rowGap(_ drag: SidebarListDrag) -> (y: CGFloat?, height: CGFloat)? {
+        guard let gap = drag.blockTarget else { return (displayed.gapY, displayed.gapShift) }
+        if drag.blockGapShape?.gap != gap {
+            var rows: (y: CGFloat?, height: CGFloat)?
+            if let row = displayed.row(for: .block(gap.section)), let base = drag.blockBases[gap.section],
+               let content = blockContent(gap.section, includeGap: true) {
+                let layout = SidebarRegionView.layout(of: content, width: bounds.width)
+                for slot in layout.rows {
+                    guard case let .item(id, _) = slot.kind, id == SidebarListBlocks.gapID else { continue }
+                    rows = (row.y + slot.frame.minY, layout.height - base.height)
+                }
+            }
+            drag.blockGapShape = (gap, rows)
+        }
+        return drag.blockGapShape?.rows
+    }
+
     /// The index among section `id`'s items (without the moved ones) where `target` puts them.
     func blockIndex(_ target: SidebarDocTarget, section id: String, moving: [String]) -> Int {
         let items = (blocks?.sections[id]?.items ?? []).map(\.id.rawValue).filter { !moving.contains($0) }
