@@ -254,20 +254,25 @@ void DynamicResource::Cancel() {
 // dev server or an overlay folder instead of the folder fixed at registration. Read per request.
 std::atomic<bool> g_live_pages{false};
 
+// Set by StopDeferredPageRequests, before CefShutdown.
+std::atomic<bool> g_page_requests_stopping{false};
+
 // A request from a top frame the browser side still reads as blank (JudgePageRequest's
 // kWaitForFrame): on a busy launch a page's scripts and styles are asked for before CEF has
-// the frame's committed URL. It polls the frame on TID_FILE_USER_BLOCKING (a file handler's Open
-// blocks, so it must not run on the IO or UI thread) until its URL is known, the
-// frame goes away or kDeferredPageWaitMs pass, then `decide` makes the real handler (the file,
-// or 403) from the URL it then has, and every call goes to that handler. No access is added:
-// the frame is judged by the same rule, only later.
+// the frame's committed URL, and the frame CEF hands over is then a placeholder that never
+// learns it (IsValid false). It polls on TID_FILE_USER_BLOCKING (a file handler's Open blocks,
+// so it must not run on the IO or UI thread) for the browser's frame of the same id until that
+// frame's URL is known (10-50 ms on cmux-lawrence-2) or kDeferredPageWaitMs pass, then `decide`
+// makes the real handler (the file, or 403) from the URL it then has, and every call goes to
+// that handler. No access is added: the same frame is judged by the same rule, only later.
 class DeferredPageResource : public CefResourceHandler {
  public:
   using Decide = std::function<CefRefPtr<CefResourceHandler>(const std::string& frame_url)>;
   static constexpr int kDeferredPageWaitMs = 5000;
   static constexpr int kDeferredPagePollMs = 10;
 
-  DeferredPageResource(CefRefPtr<CefFrame> frame, Decide decide) : frame_(frame), decide_(std::move(decide)) {}
+  DeferredPageResource(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame> frame, Decide decide)
+      : browser_(browser), frame_(frame), decide_(std::move(decide)) {}
 
   bool Open(CefRefPtr<CefRequest> request, bool& handle_request, CefRefPtr<CefCallback> callback) override {
     handle_request = false;
@@ -309,12 +314,13 @@ class DeferredPageResource : public CefResourceHandler {
 
   // Judge once the frame's URL is known, else look again shortly (TID_FILE_USER_BLOCKING).
   void Poll() {
-    std::string frame_url = frame_->IsValid() ? frame_->GetURL().ToString() : std::string();
-    const bool settled = !frame_->IsValid() || (!frame_url.empty() && frame_url != "about:blank") ||
+    std::string frame_url = CurrentFrameURL();
+    const bool settled = !browser_ || (!frame_url.empty() && frame_url != "about:blank") ||
                          waited_ms_ >= kDeferredPageWaitMs;
-    if (!settled) {
+    // No new poll once the shim shuts CEF down (CefPostDelayedTask then crashes): judge now.
+    if (!settled && !g_page_requests_stopping.load() &&
+        CefPostDelayedTask(TID_FILE_USER_BLOCKING, new PollTask(this), kDeferredPagePollMs)) {
       waited_ms_ += kDeferredPagePollMs;
-      CefPostDelayedTask(TID_FILE_USER_BLOCKING, new PollTask(this), kDeferredPagePollMs);
       return;
     }
     CefRefPtr<CefResourceHandler> inner = decide_(frame_url);
@@ -347,11 +353,27 @@ class DeferredPageResource : public CefResourceHandler {
     IMPLEMENT_REFCOUNTING(PollTask);
   };
 
+  // The URL the browser now has for the requesting frame.
+  std::string CurrentFrameURL() {
+    if (!browser_) return frame_->GetURL().ToString();
+    if (frame_->IsValid()) return frame_->GetURL().ToString();
+    const CefString id = frame_->GetIdentifier();
+    if (id.empty()) return std::string();
+    CefRefPtr<CefFrame> current = browser_->GetFrameByIdentifier(id);
+    if (current && current->IsValid()) return current->GetURL().ToString();
+    // CEF's own lookup can still hand back the placeholder; the main frame of the same id is the
+    // same document once committed.
+    CefRefPtr<CefFrame> main = browser_->GetMainFrame();
+    if (main && main->IsValid() && main->GetIdentifier() == id) return main->GetURL().ToString();
+    return std::string();
+  }
+
   CefRefPtr<CefResourceHandler> Inner() {
     std::lock_guard<std::mutex> lock(mutex_);
     return inner_;
   }
 
+  const CefRefPtr<CefBrowser> browser_;
   const CefRefPtr<CefFrame> frame_;
   const Decide decide_;
   int waited_ms_ = 0;  // Poll only; its calls never overlap
@@ -403,7 +425,7 @@ class PageFactory : public CefSchemeHandlerFactory {
         return Forbidden();
       case PageRequestVerdict::kWaitForFrame: {
         CefRefPtr<PageFactory> self(this);
-        return new DeferredPageResource(frame, [self, browser, request, parent_url](const std::string& settled_url) {
+        return new DeferredPageResource(browser, frame, [self, browser, request, parent_url](const std::string& settled_url) {
           if (JudgePageRequest(false, settled_url, parent_url, self->domain_, true) != PageRequestVerdict::kAllow)
             return self->Forbidden();
           return self->Serve(browser, request);
@@ -485,6 +507,8 @@ std::map<std::string, CefRefPtr<PageFactory>>& pages() {
 bool g_global_ready = false;
 
 }  // namespace
+
+void StopDeferredPageRequests() { g_page_requests_stopping.store(true); }
 
 void RegisterPageSchemes(CefRefPtr<CefRequestContext> context) {
   if (!context) return;
