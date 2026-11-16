@@ -162,9 +162,10 @@ struct PageFactory {
 
     /// The React Settings page (R82) on `route` (`#/settings/<section>?focus=<key>`). Its namespace
     /// goes to `SettingsPageProvider` (interim owner; the daemon relay once the config actor
-    /// serves `settings.*`), `cmux.app.` to the native ops.
-    func settingsPage(route: String?) -> PageWebView? {
+    /// serves `settings.*`), `cmux.app.` to the native ops. `warm`: bind the pool's spare at idle, so the open takes a page with its data (claimWarm).
+    func settingsPage(route: String?, warm: Bool = false) -> PageWebView? {
         guard let settings = services.settings else { return nil }
+        if !warm, let page = services.pageHostPool.claimWarm(.settings, route: route, window: services.windows.active?.window, focus: false) { return page }
         let provider = SettingsPageProvider(settings: settings, domains: { [weak services] in
             ["themes": services?.themes.catalog.names ?? [], "font_families": SettingsPageDomains.fontFamilies, "sounds": SettingsPageDomains.sounds, "recent_fonts": services?.settings?.recentFonts.families ?? []]
         }, hostLists: { [weak services] in services?.settingsWindow.pageHostLists() ?? .null }, wideningGate: services.wideningGate)
@@ -181,8 +182,7 @@ struct PageFactory {
             guard let services else { return nil }
             return await services.cloudVmHost.set(id, on: on, reachable: services.settingsWindow.vmHostReach(id) == true)
         }
-        let accounts = services.accounts.model
-        let github = services.accounts.github
+        let accounts = services.accounts.model, github = services.accounts.github
         provider.accountsState = { github.accountsPageState(accounts) }
         provider.accountsRun = { params in try await github.runAccountsPage(params, accounts: accounts) }
         provider.agents = services.agentHarnesses
@@ -349,9 +349,9 @@ struct PageFactory {
         let page = services.pageHostPool.claim(.settings, routes: routes, route: route, options: Self.settingsEngineOptions,
                                                surface: .settings,
                                                dynamicResources: dynamicResources,
-                                               window: services.windows.active?.window, focus: false)
-            ?? PageWebView(descriptor: .settings, routes: routes, route: route, options: Self.settingsEngineOptions,
-                           surface: .settings, dynamicResources: dynamicResources)
+                                               window: services.windows.active?.window, focus: false, warm: warm)
+            ?? (warm ? nil : PageWebView(descriptor: .settings, routes: routes, route: route, options: Self.settingsEngineOptions,
+                                         surface: .settings, dynamicResources: dynamicResources))
         native.anchor = { [weak page] in page }
         // An image or movie dropped on Settings becomes the background (cx-t2x.8).
         page?.fileDrop = PageFileDrop(accepts: { url in BackdropUserImages.isImage(url) }) { [weak provider] url in
