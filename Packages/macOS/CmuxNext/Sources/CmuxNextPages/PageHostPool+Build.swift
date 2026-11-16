@@ -83,6 +83,7 @@ extension PageHostPool {
         suspendAfterPaint(host)
         spareReady = true
         onSpareReady?(host)
+        warmSpare()
     }
 
     /// Opacity keeps the spare out of sight but leaves its renderer visible to WebKit. Let the

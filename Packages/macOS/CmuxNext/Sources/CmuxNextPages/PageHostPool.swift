@@ -35,6 +35,8 @@ public final class PageHostPool {
     let parking = PageHostParking()
     var spare: PageWebView?
     var spareReady = false
+    /// The page whose routes the parked spare is bound to and whose first screen it read (`claim(…, warm: true)`).
+    var spareWarmed: PageDescriptor?
     var claimed: [ObjectIdentifier: WeakHost] = [:]
     var building = false
     var activityMark: UInt64 = 0
@@ -112,14 +114,17 @@ public final class PageHostPool {
             scheduleBuild()
             return nil
         }
+        // Warm: bind the routes and let the parked document read through them; it stays the spare.
+        if warm {
+            guard spareWarmed == nil else { return nil }
+            spareWarmed = descriptor
+            host.engineDecision = decision
+            _ = host.retarget(descriptor: descriptor, routes: routes, route: route, documentAttributes: documentAttributes,
+                              surface: surface, dynamicResources: dynamicResources, warm: true)
+            return host
+        }
         let start = ContinuousClock.now
-        spare = nil
-        spareReady = false
-        host.isHidden = false
-        claimed[ObjectIdentifier(host)] = WeakHost(host)
-        host.removeFromSuperview()
-        host.countsTouches = true
-        host.shouldFocusOnAttach = focus
+        take(host, focus: focus)
         host.engineDecision = decision
         _ = host.retarget(descriptor: descriptor, routes: routes, route: route,
                           documentAttributes: documentAttributes, surface: surface,
@@ -130,10 +135,40 @@ public final class PageHostPool {
         return host
     }
 
+    /// Moves the spare out of the pool into a claim.
+    private func take(_ host: PageWebView, focus: Bool) {
+        spare = nil
+        spareReady = false
+        spareWarmed = nil
+        host.isHidden = false
+        claimed[ObjectIdentifier(host)] = WeakHost(host)
+        host.removeFromSuperview()
+        host.countsTouches = true
+        host.shouldFocusOnAttach = focus
+    }
+
+    /// Asks the app to warm the ready spare (``onSpareCanWarm``) unless it is warm or that page is open.
+    func warmSpare() {
+        guard let warm = onSpareCanWarm, spare != nil, spareReady, spareWarmed == nil,
+              !claimedHosts.contains(where: { $0.descriptor == .settings }) else { return }
+        warm()
+    }
+
     /// Takes the spare that `claim(…, warm: true)` bound to `descriptor`'s routes: its document already read
     /// its first screen, so the open only routes it. Nil when there is none (claim as usual then).
     public func claimWarm(_ descriptor: PageDescriptor, route: String?, window: NSWindow?, focus: Bool) -> PageWebView? {
-        nil
+        guard let host = spare, spareReady, spareWarmed == descriptor, host.descriptor == descriptor, !projectionIsOpen() else {
+            return nil
+        }
+        let start = ContinuousClock.now
+        if target == nil, let window { follow(window) }
+        isLikely = true
+        take(host, focus: focus)
+        host.openWarm(route: route)
+        record(Claim(page: descriptor.id, crossWindow: window != nil && window !== target,
+                     spare: true, milliseconds: Self.milliseconds(since: start)))
+        scheduleBuild()
+        return host
     }
 
     /// Releases a claimed host. Only an untouched host may return to the spare slot.
@@ -154,11 +189,13 @@ public final class PageHostPool {
                 self.suspendAfterPaint(host)
                 self.spareReady = true
                 self.onSpareReady?(host)
+                self.warmSpare()
             }
             return
         }
         host.close()
         scheduleBuild()
+        warmSpare()
     }
 
     /// Marks one of the bundled page surfaces as likely to open soon.
@@ -173,6 +210,7 @@ public final class PageHostPool {
         guard let host = spare else { return }
         spare = nil
         spareReady = false
+        spareWarmed = nil
         host.removeFromSuperview()
         host.close()
     }

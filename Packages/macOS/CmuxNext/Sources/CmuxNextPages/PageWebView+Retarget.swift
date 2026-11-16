@@ -16,7 +16,7 @@ extension PageWebView {
     @discardableResult
     func retarget(descriptor: PageDescriptor, routes: [PageRoute], route: String? = nil,
                   documentAttributes: [String: String] = [:], surface: SurfaceKind? = nil,
-                  dynamicResources: (any PageDynamicResourceSource)? = nil) -> Bool {
+                  dynamicResources: (any PageDynamicResourceSource)? = nil, warm: Bool = false) -> Bool {
         guard isPooled, PageServedHosts.pooledDescriptors.contains(descriptor), PageWebView.servedRoot(for: descriptor) != nil else {
             return false
         }
@@ -44,9 +44,11 @@ extension PageWebView {
             webView.load(URLRequest(url: target))
             return true
         }
-        if loaded {
-            claimDocument(documentAttributes: documentAttributes)
+        // A warm document read through the routes this rebind just ended: it reloads (``openWarm(route:)`` keeps them).
+        if loaded, !claimState.warm {
+            claimDocument(documentAttributes: documentAttributes, warm: warm)
         } else {
+            claimState.warm = false
             noteLoadedClaim()
             paintedUptime = nil
             reloadDocument()

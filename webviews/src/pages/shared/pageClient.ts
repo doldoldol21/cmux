@@ -87,8 +87,10 @@ export const RECEIVE_NAME = "__cmuxPageReceive";
 export const PARKED_NAME = "__cmuxPageParked";
 
 /**
- * The host's claim of a parked document (`{route?}`): the claim's routes are bound, so the client
- * shows `route` (a URL fragment), sends what it held, and acknowledges with `{claimed: true}`. A
+ * The host's claim of a parked document (`{route?, warm?}`): the claim's routes are bound, so the
+ * client shows `route` (a URL fragment), sends what it held, and acknowledges with `{claimed: true}`.
+ * A warm claim (`warm: true`) comes at idle while the document is still parked out of sight: it sends
+ * what it held but keeps its paint report, and the open's claim that follows only routes it. A
  * document that was not parked (it already ran against other routes) answers
  * `cmux.page.not_parked`, and the host reloads it.
  */
@@ -126,6 +128,8 @@ export class BridgePageClient implements PageClient {
   /** True from boot in a parked pooled host until the claim (`PARKED_NAME`). */
   private parked: boolean;
   private held: Held[] = [];
+  /** True after a warm claim until the open's claim. */
+  private warm = false;
   private readonly location: ClaimLocation | undefined;
 
   constructor(
@@ -228,16 +232,18 @@ export class BridgePageClient implements PageClient {
 
   /** The host claimed this document: show the claim's route, then send what was held, in order. */
   private claim(params: unknown): unknown {
-    if (!this.parked) throw pageError("cmux.page.not_parked", "the document already ran");
-    const route = (params as { route?: unknown } | null)?.route;
+    if (!this.parked && !this.warm) throw pageError("cmux.page.not_parked", "the document already ran");
+    const { route, warm } = (params ?? {}) as { route?: unknown; warm?: unknown };
     if (typeof route === "string" && route.startsWith("#") && this.location && this.location.hash !== route)
       this.location.replace(route);
     this.parked = false;
+    this.warm = warm === true;
     const held = this.held;
     this.held = [];
     for (const { envelope, resolve, reject } of held) this.handler.postMessage(envelope).then(resolve, reject);
-    // The host's next paint report (its pane's hold) waits for the claimed page's first screen.
-    holdPaintForClaim();
+    // The host's next paint report (its pane's hold) waits for the claimed page's first screen; a warm
+    // document reads it now and shows at the open's claim.
+    if (!this.warm) holdPaintForClaim();
     return { claimed: true };
   }
 
