@@ -18,7 +18,7 @@ function badge(state: SettingsState, category: string): "warning" | "lock" | "up
 
 /** In the app the host draws SF Symbols (`symbol-bold/<name>`, MenuSymbolImages); the gallery and tests
  * have no such route and keep the page's own drawings. */
-const HOST_SYMBOLS = globalThis.location?.protocol === "cmux-page:";
+const hostSymbols = () => globalThis.location?.protocol === "cmux-page:";
 
 /** The host's bold drawing of a symbol (`symbol-bold/<name>`, MenuSymbolImages; Lucas 2026-11-11). */
 const symbolHref = (name: string) => `symbol-bold/${encodeURIComponent(encodeURIComponent(name))}`;
@@ -27,11 +27,33 @@ const symbolHref = (name: string) => `symbol-bold/${encodeURIComponent(encodeURI
  * four from feat-cmux-next's sidebar); every other category keeps the host's bold symbol. */
 const PAGE_DRAWN: ReadonlySet<string> = new Set(["terminal", "bell", "keyboard", "contextualmenu.and.cursorarrow"]);
 
+/** The host-drawn icons loaded so far, kept so the browser keeps them decoded for the rows' masks. */
+const loadedSymbols: HTMLImageElement[] = [];
+
+/**
+ * Loads and decodes the host's drawing of each symbol the sidebar masks, so the page's first frame has
+ * every icon (Lawrence 2026-11-15: "sometimes logos in settings doesnt load fast"). A mask's image is
+ * fetched only when its row first paints: the sidebar showed with empty icon slots, then each icon popped
+ * in. The page's paint report waits for this (mount.tsx); a symbol the host cannot draw settles too.
+ */
+export function preloadCategorySymbols(symbols: Iterable<string>): Promise<void> {
+  if (!hostSymbols()) return Promise.resolve();
+  const names = [...new Set(symbols)].filter((symbol) => !PAGE_DRAWN.has(symbol));
+  return Promise.all(
+    names.map((symbol) => {
+      const image = new Image();
+      loadedSymbols.push(image);
+      image.src = symbolHref(symbol);
+      return image.decode().catch(() => undefined);
+    }),
+  ).then(() => undefined);
+}
+
 /** A category's icon: the real SF Symbol it names, the one the window sidebar and menus draw, bold,
  * as a template PNG masking a `currentColor` box, so it inks like the row's text (Lucas 2026-11-11:
  * the page's hand-drawn icons looked cheap beside Aside's and Codex's). */
 function CategoryIcon({ symbol }: { symbol: string }) {
-  if (!HOST_SYMBOLS || PAGE_DRAWN.has(symbol)) return <Icon name={symbol} />;
+  if (!hostSymbols() || PAGE_DRAWN.has(symbol)) return <Icon name={symbol} />;
   return <span className="section-symbol" data-symbol={symbol} style={{ maskImage: `url("${symbolHref(symbol)}")` }} />;
 }
 
