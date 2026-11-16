@@ -391,13 +391,13 @@ final class SettingsPageProvider: PageProvider {
         return PageSubscription { task.cancel() }
     }
 
-    /// One event per change of `read`'s value (the stores it reads are observable); the event
-    /// carries the new value.
+    /// One event per change of `read`'s value (the stores it reads are observable), carrying it; the baseline is read once (`current`).
     private static func watch(_ read: @escaping @MainActor () -> JSONValue,
                               onEvent: @escaping @MainActor (JSONValue) -> Void) -> PageSubscription {
         let task = Task { @MainActor in
-            var last = read()
-            for await value in ObservationStream({ read() }) where value != last {
+            let (first, later) = ObservationStream.current { read() }
+            var last = first
+            for await value in later where value != last {
                 last = value
                 onEvent(value)
             }
