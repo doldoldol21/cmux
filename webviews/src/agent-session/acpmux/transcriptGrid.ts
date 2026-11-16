@@ -30,7 +30,9 @@ export const TRANSCRIPT_LINE_ROW = 22;
 ///   `line`  one more one-line row of the run, TRANSCRIPT_LINE_ROW tall (#29965)
 ///   `slot`  the footer's TRANSCRIPT_FOOTER_CONTROL slot it has under a reply, so what lands over it moves nothing
 ///           (cmux#24569)
-export const TRANSCRIPT_LIVE_STEP_BOX = "line" as "line" | "slot";
+/// `slot` with the run gap over it: Leo chose 32/16 on 2026-11-16 (cmux#43627), so a run or a reply landing over
+/// the live line moves neither its box nor its words ("too much render shift when the thing restarts").
+export const TRANSCRIPT_LIVE_STEP_BOX = "slot" as "line" | "slot";
 /// The grid token of the gap over it: the run gap Codex leaves between transcript items (#42247).
 export const TRANSCRIPT_LIVE_STEP_GAP_TOKEN = "gap-run";
 export const TRANSCRIPT_LIVE_STEP_GAP = gridLength(TRANSCRIPT_LIVE_STEP_GAP_TOKEN);
