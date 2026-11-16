@@ -19,6 +19,15 @@ struct SidebarBlockGap: Hashable {
     var index: Int
 }
 
+/// The gap a row drag shows open: its top in the list and how far it moved what is under it.
+struct SidebarRowGap {
+    var y: CGFloat?
+    var height: CGFloat
+    /// A block's gap after its last item: the base y of a point in the gap. With the gap taken out, that point is
+    /// the top of the list row under the block, and a drop "before that row" would leave the block (an unpin).
+    var hold: CGFloat?
+}
+
 /// A dropped drag kept on screen until its move lands (`SidebarListView.settling`).
 struct SidebarSettlingDrop {
     let drag: SidebarListDrag
@@ -274,20 +283,20 @@ extension SidebarListViewComponents {
         return y >= row.y + base ? row.y + base - 1 : y
     }
 
-    /// The gap the drag shows open, as the row rule reads it (`SidebarDragGeometry.edgeY`, `baseY`): its top in the list
-    /// and how far it moved what is under it. The list's own gap, or a block's gap among item rows (pinned workspaces),
-    /// so pinned and unpinned rows reorder by one rule. Nil for a block's gap among tiles: they flow on lines, and
-    /// the card's centre decides there (`baseY(displayY:blockGap:bases:)`).
-    func rowGap(_ drag: SidebarListDrag) -> (y: CGFloat?, height: CGFloat)? {
-        guard let gap = drag.blockTarget else { return (displayed.gapY, displayed.gapShift) }
+    /// The gap the drag shows open, as the row rule reads it (`SidebarDragGeometry.edgeY`, `baseY`): the list's own gap,
+    /// or a block's gap among item rows (pinned workspaces), so pinned and unpinned rows reorder by one rule. Nil for
+    /// a block's gap among tiles: they flow on lines, and the card's centre decides there (`baseY(displayY:blockGap:bases:)`).
+    func rowGap(_ drag: SidebarListDrag) -> SidebarRowGap? {
+        guard let gap = drag.blockTarget else { return SidebarRowGap(y: displayed.gapY, height: displayed.gapShift) }
         if drag.blockGapShape?.gap != gap {
-            var rows: (y: CGFloat?, height: CGFloat)?
+            var rows: SidebarRowGap?
             if let row = displayed.row(for: .block(gap.section)), let base = drag.blockBases[gap.section],
                let content = blockContent(gap.section, includeGap: true) {
                 let layout = SidebarRegionView.layout(of: content, width: bounds.width)
                 for slot in layout.rows {
                     guard case let .item(id, _) = slot.kind, id == SidebarListBlocks.gapID else { continue }
-                    rows = (row.y + slot.frame.minY, layout.height - base.height)
+                    let y = row.y + slot.frame.minY, end = row.y + base.height
+                    rows = SidebarRowGap(y: y, height: layout.height - base.height, hold: y >= end ? end - 1 : nil)
                 }
             }
             drag.blockGapShape = (gap, rows)

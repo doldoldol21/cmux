@@ -25,13 +25,13 @@ struct SidebarPinnedRowEdgeReorderTests {
     }
 
     /// Presses pinned row `index` at its centre, moves the pointer `dy` points down the list (negative: up) in
-    /// small steps and lets go there.
+    /// 1 pt steps, holds it there for a few more moves and lets go.
     static func drag(_ h: Harness, pin index: Int, by dy: CGFloat) throws {
         let view = try h.item(Harness.pins[index].id)
         let start = view.convert(NSPoint(x: view.bounds.midX, y: view.bounds.midY), to: nil)
         view.mouseDown(with: try h.mouse(.leftMouseDown, at: start))
-        let steps = max(2, Int((abs(dy) / 3).rounded(.up)))
-        for step in 1...steps {
+        let steps = max(2, Int(abs(dy).rounded(.up)))
+        for step in Array(1...steps) + [steps, steps, steps] {
             let y = start.y - dy * CGFloat(step) / CGFloat(steps) // the window's y grows up
             view.mouseDragged(with: try h.mouse(.leftMouseDragged, at: NSPoint(x: start.x, y: y)))
         }
@@ -74,6 +74,18 @@ struct SidebarPinnedRowEdgeReorderTests {
         try Self.drag(h, pin: 0, by: third.midY + 2 - first.maxY)
         #expect(Self.place(h, moved: 0) == 2, "the row is not after the third pinned row: \(Self.sent(h))")
         h.expectEveryRowAtRest("after a pinned row dragged down past two rows")
+    }
+
+    /// In the last pinned place, a few points further down: the row stays pinned. Its bottom is in the open gap, over
+    /// where the first list row was; it leaves Pinned only when its bottom passes that row's middle as now drawn.
+    @Test func aPinnedRowHeldInTheLastPinnedPlaceStaysPinned() throws {
+        defer { Motion.reduceMotionOverride = nil }
+        let h = Harness()
+        defer { h.close() }
+        let first = try Self.frame(h, 0), third = try Self.frame(h, 2)
+        try Self.drag(h, pin: 0, by: third.midY + 10 - first.maxY)
+        #expect(Self.place(h, moved: 0) == 2, "the row is not the last pinned row: \(Self.sent(h))")
+        h.expectEveryRowAtRest("after a pinned row held in the last pinned place")
     }
 
     /// The third pinned row dragged up until its top is 2 pt past the second row's middle: it goes before the second row.

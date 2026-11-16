@@ -243,6 +243,7 @@ extension SidebarListViewComponents {
             guard let edge = geometry.edgeY(top: top, bottom: top + height, x: point.x, movingUp: drag.movingUp, gapY: gap.y,
                                             gapHeight: gap.height, current: drag.docTarget, reversing: reversing) else { return }
             if let hit = geometry.hit(CGPoint(x: point.x, y: edge)), hit.slot.kind == .row || rows[hit.slot.key] != nil { y = edge }
+            if let hold = gap.hold, y == gap.y { y = hold } // in a block's last gap: still in the block
         }
         // A block item's card back over its own slot drops where it came from. The base has the dragged items out, so
         // that slot's centre is the next item's middle there, and a point either way picked a neighbour's half: a
