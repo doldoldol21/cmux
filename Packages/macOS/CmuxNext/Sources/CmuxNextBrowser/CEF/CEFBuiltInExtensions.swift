@@ -73,7 +73,6 @@ nonisolated struct CEFBuiltInExtensions: Equatable, Sendable {
                 // stay exploitable. The built-in copy has the same id and storage, so
                 // the person's settings and filters carry over.
                 let version = personAdBlockerVersion(entry: entry, path: path, profile: profile, fileManager: fileManager)
-                if let version, !isAtLeast(version, adBlockerMinimumVersion) { continue }
                 return location
             }
         }
