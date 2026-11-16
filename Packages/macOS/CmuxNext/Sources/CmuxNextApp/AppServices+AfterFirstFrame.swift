@@ -64,7 +64,7 @@ extension AppServices {
             fallback: { [weak self] window in
                 self?.windows.controllers.compactMap(\.window).first { $0 !== window && $0.isVisible }
             })
-        pageHostPool.noteLikely()
+        pageHostPool.onSpareCanWarm = { [weak self] in _ = self.map { PageFactory(services: $0).settingsPage(route: nil, warm: true) } }; pageHostPool.noteLikely()
         AgentTabImport.start(self)
         DebugTimings.markLaunch("launch.post_window_warmups")
     }

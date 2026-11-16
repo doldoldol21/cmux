@@ -35,6 +35,9 @@ final class PageClaimState {
     }
     private(set) var deadline = DemandTimer(owner: "PageWebView.claim")
     var budget: Duration = PageWebView.claimAcknowledgementBudget
+    /// The document took a warm claim (``PageWebView/claimDocument(documentAttributes:warm:)``): it reads through
+    /// its routes while still parked, and only ``PageWebView/openWarm(route:)`` may show it.
+    var warm = false
 
     /// Ends the pending claim; true when it was pending.
     func end() -> Bool {
@@ -71,22 +74,30 @@ extension PageWebView {
 
     /// Hands the claim to the current document (``retarget(descriptor:routes:route:documentAttributes:surface:dynamicResources:)``
     /// already bound the routes) and reloads it only when it does not acknowledge.
-    func claimDocument(documentAttributes: [String: String]) {
-        // Its parked frame was the window's whole content: shown at once in a narrower pane, it
-        // drew its wide layout, then blank tiles while it laid out again. The pane keeps what it
-        // showed until the page drew at the pane's size (PanePaintHold).
-        paintedUptime = nil
-        repaintsAtNextLayout = true
-        needsLayout = true
+    ///
+    /// `warm`: the parked spare reads its first screen through the routes now and stays parked: the
+    /// document sends what it held but holds its paint report, and keeps taking a later claim (the open).
+    func claimDocument(documentAttributes: [String: String], warm: Bool = false) {
+        if !warm {
+            // Its parked frame was the window's whole content: shown at once in a narrower pane, it
+            // drew its wide layout, then blank tiles while it laid out again. The pane keeps what it
+            // showed until the page drew at the pane's size (PanePaintHold).
+            paintedUptime = nil
+            repaintsAtNextLayout = true
+            needsLayout = true
+        }
         _ = claimState.end()
         let state = claimState
+        state.warm = warm
         let generation = state.generation
         state.pending = true
         state.start = .now
         if let script = Self.attributesScript(documentAttributes) { webView.evaluateJavaScript(script, completionHandler: nil) }
         applyTheme(force: true)
         applyLiveDocumentAttributes()
-        let params: JSONValue = route.map { ["route": .string($0)] } ?? .object([:])
+        var params: [String: JSONValue] = route.map { ["route": .string($0)] } ?? [:]
+        if warm { params["warm"] = .bool(true) }
+        let params = JSONValue.object(params)
         let router = router
         Task { @MainActor [weak self] in
             let path: PageClaimOutcome.Path
@@ -101,6 +112,14 @@ extension PageWebView {
         state.deadline.schedule(after: state.budget) { @MainActor [weak self] in
             self?.finishClaim(generation, .timedOut)
         }
+    }
+
+    /// Opens the warm document on `route`: its routes and reads stay; the claim only routes it and
+    /// releases its paint report. A document that did not take the warm claim gets a plain one.
+    func openWarm(route: String?) {
+        self.route = route.map { $0.hasPrefix("#") ? $0 : "#" + $0 }
+        touched = false
+        claimDocument(documentAttributes: [:])
     }
 
     /// Records a claim that loaded its document.
@@ -118,11 +137,12 @@ extension PageWebView {
         state.outcome = PageClaimOutcome(path: path,
                                          milliseconds: Double(seconds) * 1_000 + Double(attoseconds) / 1e15)
         guard path != .acknowledged else {
-            if repaintsAtNextLayout { needsLayout = true }
+            if !state.warm, repaintsAtNextLayout { needsLayout = true }
             resumeLoadWaiters()
             return
         }
-        // The reloaded document reports its own first paint.
+        // The reloaded document reports its own first paint; parked again, it takes the open as a cold claim.
+        state.warm = false
         repaintsAtNextLayout = false
         loaded = false
         reloadDocument()
