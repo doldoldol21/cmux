@@ -48,6 +48,9 @@ public final class PageHostPool {
     public internal(set) var spans: [(name: String, milliseconds: Double)] = []
     public var onSpan: ((String, Double) -> Void)?
     public var onSpareReady: ((PageWebView) -> Void)?
+    /// Called when the ready spare may load a page's first screen before its open (``claim(_:routes:route:documentAttributes:options:surface:dynamicResources:window:focus:warm:)``
+    /// with `warm`): the app warms Settings there, so its open shows a page that already has its data.
+    public var onSpareCanWarm: (() -> Void)?
     /// Whether a projection window is open (``WebProjection``). The pool keeps no spare then: a spare holds
     /// the shipped document, so a claim of the same page loads nothing the projection could send to its
     /// server, and one parked in the projection window would reload from the worktree and later serve an
@@ -93,7 +96,7 @@ public final class PageHostPool {
                       documentAttributes: [String: String] = [:], options: PageEngineOptions = .standard,
                       surface: SurfaceKind? = nil,
                       dynamicResources: (any PageDynamicResourceSource)? = nil, window: NSWindow?,
-                      focus: Bool = true) -> PageWebView? {
+                      focus: Bool = true, warm: Bool = false) -> PageWebView? {
         guard PageServedHosts.pooledDescriptors.contains(descriptor) else { return nil }
         guard !projectionIsOpen() else { dropSpare(); return nil }
         // Spares are WebKit views: a page that shows in Chromium is made fresh (PageWebView+Chromium). Its
@@ -125,6 +128,12 @@ public final class PageHostPool {
                      spare: true, milliseconds: Self.milliseconds(since: start)))
         scheduleBuild()
         return host
+    }
+
+    /// Takes the spare that `claim(…, warm: true)` bound to `descriptor`'s routes: its document already read
+    /// its first screen, so the open only routes it. Nil when there is none (claim as usual then).
+    public func claimWarm(_ descriptor: PageDescriptor, route: String?, window: NSWindow?, focus: Bool) -> PageWebView? {
+        nil
     }
 
     /// Releases a claimed host. Only an untouched host may return to the spare slot.
